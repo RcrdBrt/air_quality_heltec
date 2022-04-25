@@ -34,6 +34,7 @@ bool lora_interrupt_enabled = false, lora_recv_packet = false;
 
 Adafruit_SSD1306 display(128, 64);
 
+unsigned long last_blue_btn_irq_time = 0;
 bool blue_btn_pressed = false;
 
 bool got_an_alarm = false;
@@ -45,7 +46,12 @@ ICACHE_RAM_ATTR void pms_timer_callback(TimerHandle_t xTimer)
 
 ICACHE_RAM_ATTR void blue_btn_callback()
 {
-  blue_btn_pressed = true;
+  if (millis() - last_blue_btn_irq_time < 500)
+  {
+    blue_btn_pressed = true;
+  }
+
+  last_blue_btn_irq_time = millis();
 }
 
 ICACHE_RAM_ATTR void lora_recv_callback()
@@ -135,9 +141,7 @@ void loopProd()
 
   if (blue_btn_pressed)
   {
-    blue_btn_pressed = false;
     Serial.println("blue button pressed");
-
     if (got_an_alarm)
     {
       got_an_alarm = false;
@@ -150,6 +154,7 @@ void loopProd()
       digitalWrite(BUZZER, HIGH);
     }
     delay(1000);
+    blue_btn_pressed = false;
     digitalWrite(BUZZER, LOW);
   }
 

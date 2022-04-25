@@ -1,17 +1,16 @@
 #include <Arduino.h>
 #include <WiFi.h>
-//#include <HTTPClient.h>
+#include <HTTPClient.h>
 #include <SoftwareSerial.h>
 #include <PMS.h>
 #include <RadioLib.h>
 #include <AES.h>
 #include <GCM.h>
-#include <Wire.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
 #include <pb_decode.h>
 #include <proto_payload.pb.h>
-#include <esp_timer.h>
+#include <vector>
 
 #include "secrets.h"
 
@@ -38,6 +37,28 @@ unsigned long last_blue_btn_irq_time = 0;
 bool blue_btn_pressed = false;
 
 bool got_an_alarm = false;
+
+void send_to_backend(const PMS::DATA &data)
+{
+  String tmpl = "https://data.rcrdbrt.com/air_quality?place=1&pm1=";
+  tmpl += data.PM_AE_UG_1_0;
+  tmpl += "&pm2_5=";
+  tmpl += data.PM_AE_UG_2_5;
+  tmpl += "&pm10=";
+  tmpl += data.PM_AE_UG_10_0;
+
+  Serial.println(tmpl);
+
+  WiFiClientSecure wifi_unsecure;
+  wifi_unsecure.setInsecure(); // nice
+  HTTPClient http;
+
+  // not great, not terrible. POST might have issues
+  ESP_ERROR_CHECK_WITHOUT_ABORT(http.begin(wifi_unsecure, tmpl) != true);
+  http.addHeader("Authorization", API_SECRET);
+  Serial.println("PMS data HTTP response code: " + String(http.GET())); // just log the HTTP response code
+  http.end();
+}
 
 ICACHE_RAM_ATTR void pms_timer_callback(TimerHandle_t xTimer)
 {
@@ -134,6 +155,13 @@ void loopProd()
   // air quality measurement
   if (pms_timer_tick)
   {
+    pms.wakeUp();
+    delay(30000); // wait 30s for the sensor's fan to capture the air in the environment
+    if (pms.readUntil(pms_data, 2000))
+    {
+      send_to_backend(pms_data);
+    }
+    pms.sleep();
     pms_timer_tick = false;
     Serial.println("time to use the PMS sensor " + String(millis()));
   }

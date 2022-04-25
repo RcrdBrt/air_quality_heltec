@@ -14,7 +14,6 @@
 #include <proto_payload.pb.h>
 
 #include "secrets.h"
-#include "periodic_timer.h"
 
 #define BLUE_BTN 36
 #define BUZZER 37
@@ -72,73 +71,47 @@ void setup()
   pinMode(BLUE_BTN, INPUT_PULLDOWN);
   attachInterrupt(BLUE_BTN, blue_btn_callback, FALLING);
 
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
-  {
-    Serial.println("Failed to initialize display");
-    ESP.restart();
-  }
+  Serial.begin(9600); // Initialize serial communications via USB
+
+  ESP_ERROR_CHECK(display.begin(SSD1306_SWITCHCAPVCC, 0x3C));
   display.dim(false);
   display.println("Air Quality Heltec");
 
-  Serial.begin(9600);                   // Initialize serial communications via USB
-  esp_bt_controller_deinit();           // Deinitialize the Bluetooth controller
-  WiFi.mode(WIFI_STA);                  // Set the WiFi module to station mode
-  WiFi.begin("NET", WIFI_PASSWORD);     // Connect to the WiFi network
-  while (WiFi.status() != WL_CONNECTED) // Wait for the Wi-Fi to connect
+  ESP_ERROR_CHECK(esp_bt_controller_deinit());       // Deinitialize the Bluetooth controller
+  WiFi.mode(WIFI_STA);                               // Set the WiFi module to station mode
+  ESP_ERROR_CHECK(WiFi.begin("NET", WIFI_PASSWORD)); // Connect to the WiFi network
+  while (WiFi.status() != WL_CONNECTED)              // Wait for the Wi-Fi to connect
   {
     delay(500);
     Serial.print(".");
   }
   Serial.print("IP: ");
   Serial.println(WiFi.localIP()); // Print the IP address of the ESP32
-  pms.sleep();                    // make sure the PMS sensor is in sleep mode
+
+  pms.sleep(); // make sure the PMS sensor is in sleep mode
 
   cipher.clear();
-  if (!cipher.setKey(AES_KEY, 32))
-  {
-    Serial.println("Failed to set key");
-    ESP.restart();
-  }
+  ESP_ERROR_CHECK(cipher.setKey(AES_KEY, 32));
 
-  if (radio.begin(868.0, 125, 12, 5, 18U, 17, 8U, 0) != 0)
-  {
-    Serial.println("Failed to initialize radio");
-    ESP.restart();
-  }
+  ESP_ERROR_CHECK(radio.begin(868.0, 125, 12, 5, 18U, 17, 8U, 0) != 0);
   radio.setDio0Action(lora_recv_callback);
   radio.startReceive();
 
-  esp_timer_create_args_t pms_timer_args = {
-      .callback = pms_timer_callback,
-      .arg = NULL,
-      .dispatch_method = ESP_TIMER_TASK,
-      .name = "pms_timer"};
-  if (esp_timer_create(&pms_timer_args, &pms_timer) != ESP_OK)
-  {
-    Serial.println("Failed to create PMS sensor timer");
-    ESP.restart();
-  }
-  if (esp_timer_start_periodic(pms_timer, PMS_TIMER_DURATION_USECS) != ESP_OK)
-  {
-    Serial.println("Failed to start PMS sensor timer");
-    ESP.restart();
-  }
+  ESP_ERROR_CHECK(esp_timer_create(&(esp_timer_create_args_t){
+                                       .callback = pms_timer_callback,
+                                       .arg = NULL,
+                                       .dispatch_method = ESP_TIMER_TASK,
+                                       .name = "pms_timer"},
+                                   &pms_timer) != ESP_OK);
+  ESP_ERROR_CHECK(esp_timer_start_periodic(pms_timer, PMS_TIMER_DURATION_USECS));
 
-  esp_timer_create_args_t basement_timer_args = {
-      .callback = basement_timer_callback,
-      .arg = NULL,
-      .dispatch_method = ESP_TIMER_TASK,
-      .name = "basement_timer"};
-  if (esp_timer_create(&basement_timer_args, &basement_timer) != ESP_OK)
-  {
-    Serial.println("Failed to create basement timer");
-    ESP.restart();
-  }
-  if (esp_timer_start_periodic(basement_timer, BASEMENT_TIMER_DURATION_USECS) != ESP_OK) // 1 hour max time between transmissions for the basement node
-  {
-    Serial.println("Failed to start basement timer");
-    ESP.restart();
-  }
+  ESP_ERROR_CHECK(esp_timer_create(&(esp_timer_create_args_t){
+                                       .callback = basement_timer_callback,
+                                       .arg = NULL,
+                                       .dispatch_method = ESP_TIMER_TASK,
+                                       .name = "basement_timer"},
+                                   &basement_timer));
+  ESP_ERROR_CHECK(esp_timer_start_periodic(basement_timer, BASEMENT_TIMER_DURATION_USECS));
 
   display.clearDisplay();
   digitalWrite(LED_BUILTIN, LOW); // Turn the LED off
@@ -224,6 +197,8 @@ void loopProd()
   if (basement_timer_tick)
   {
     Serial.println("No more data from the basement, please go check it!");
+    basement_timer_tick = false;
+    got_an_alarm = true;
   }
 
   if (got_an_alarm)

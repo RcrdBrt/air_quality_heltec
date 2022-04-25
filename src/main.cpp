@@ -17,18 +17,16 @@
 
 #define BLUE_BTN 36
 #define BUZZER 32
-#define BASEMENT_TIMER_DURATION_USECS 3600 * 1e6 // 1 hour
-#define PMS_TIMER_DURATION_USECS 1800 * 1e6      // 30 minutes
+#define BASEMENT_TIMER_DURATION_MS 3600 * 1e3        // 1 hour
+#define PMS_TIMER_DURATION_MS 1800 * 1e3             // 30 minutes
+#define GRACE_PERIOD_TIMER_DURATION_MS 20 * 60 * 1e3 // 20 minutes
 
 SoftwareSerial pms_serial;
 PMS pms(pms_serial);
 PMS::DATA pms_data;
-esp_timer_handle_t pms_timer;
-bool pms_timer_tick = false;
 
-xTimerHandle grace_period_timer;
-esp_timer_handle_t basement_timer;
-bool basement_timer_tick = false, basement_in_grace_period = false;
+xTimerHandle grace_period_timer, basement_timer, pms_timer;
+bool basement_timer_tick = false, basement_in_grace_period = false, pms_timer_tick = false;
 
 GCM<AES256> cipher;
 SX1276 radio = new Module(18, 26, 14, 35);
@@ -40,7 +38,7 @@ bool blue_btn_pressed = false;
 
 bool got_an_alarm = false;
 
-ICACHE_RAM_ATTR void pms_timer_callback(void *arg)
+ICACHE_RAM_ATTR void pms_timer_callback(TimerHandle_t xTimer)
 {
   pms_timer_tick = true;
 }
@@ -58,12 +56,12 @@ ICACHE_RAM_ATTR void lora_recv_callback()
   }
 }
 
-ICACHE_RAM_ATTR void basement_timer_callback(void *arg)
+ICACHE_RAM_ATTR void basement_timer_callback(TimerHandle_t xTimer)
 {
   basement_timer_tick = true;
 }
 
-ICACHE_RAM_ATTR void grace_period_timer_callback(void *arg)
+ICACHE_RAM_ATTR void grace_period_timer_callback(TimerHandle_t xTimer)
 {
   basement_in_grace_period = false;
 }
@@ -102,27 +100,22 @@ void setup()
   radio.setDio0Action(lora_recv_callback);
   radio.startReceive();
 
-  esp_timer_create_args_t pms_timer_args = {
-      .callback = pms_timer_callback,
-      .arg = NULL,
-      .dispatch_method = ESP_TIMER_TASK,
-      .name = "pms_timer"};
-  ESP_ERROR_CHECK(esp_timer_create(&pms_timer_args,
-                                   &pms_timer));
-  ESP_ERROR_CHECK(esp_timer_start_periodic(pms_timer, PMS_TIMER_DURATION_USECS));
+  basement_timer = xTimerCreate("basement_timer",
+                                pdMS_TO_TICKS(BASEMENT_TIMER_DURATION_MS),
+                                pdTRUE,
+                                NULL,
+                                basement_timer_callback);
+  ESP_ERROR_CHECK(xTimerStart(basement_timer, pdMS_TO_TICKS(10)) != pdPASS);
 
-  esp_timer_create_args_t basement_timer_args = {
-      .callback = basement_timer_callback,
-      .arg = NULL,
-      .dispatch_method = ESP_TIMER_TASK,
-      .name = "basement_timer"};
-  ESP_ERROR_CHECK(esp_timer_create(&basement_timer_args,
-                                   &basement_timer));
-  ESP_ERROR_CHECK(esp_timer_start_periodic(basement_timer, BASEMENT_TIMER_DURATION_USECS));
+  pms_timer = xTimerCreate("pms_timer",
+                           pdMS_TO_TICKS(PMS_TIMER_DURATION_MS),
+                           pdTRUE,
+                           NULL,
+                           pms_timer_callback);
+  ESP_ERROR_CHECK(xTimerStart(pms_timer, pdMS_TO_TICKS(10)) != pdPASS);
 
-  // trying a FreeRTOS software timer for the sake of it
   grace_period_timer = xTimerCreate("grace_period_timer",
-                                    portTICK_PERIOD_MS * 1000 * 60 * 20, // 20 minutes
+                                    pdMS_TO_TICKS(GRACE_PERIOD_TIMER_DURATION_MS),
                                     pdFALSE,
                                     NULL,
                                     grace_period_timer_callback);
@@ -152,7 +145,7 @@ void loopProd()
     else
     {
       basement_in_grace_period = true;
-      ESP_ERROR_CHECK(xTimerReset(grace_period_timer, portTICK_PERIOD_MS * 10)); // wait 10 milliseconds to ensure the timer has started
+      ESP_ERROR_CHECK(xTimerReset(grace_period_timer, portTICK_PERIOD_MS * 10) != pdPASS); // wait 10 milliseconds to ensure the timer has started
       digitalWrite(BUZZER, HIGH);
     }
     delay(1000);
@@ -212,8 +205,7 @@ void loopProd()
     }
 
   finalize_lora_radio:
-    esp_timer_stop(basement_timer);
-    esp_timer_start_periodic(basement_timer, BASEMENT_TIMER_DURATION_USECS);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(xTimerReset(basement_timer, pdMS_TO_TICKS(10)) != pdPASS);
     radio.startReceive();
     digitalWrite(LED_BUILTIN, LOW); // Turn the LED off
     lora_interrupt_enabled = true;

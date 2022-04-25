@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <esp_bt.h>
 #include <WiFi.h>
 //#include <HTTPClient.h>
 #include <SoftwareSerial.h>
@@ -12,11 +11,12 @@
 #include <Adafruit_GFX.h>
 #include <pb_decode.h>
 #include <proto_payload.pb.h>
+#include <esp_timer.h>
 
 #include "secrets.h"
 
 #define BLUE_BTN 36
-#define BUZZER 37
+#define BUZZER 32
 #define BASEMENT_TIMER_DURATION_USECS 3600 * 1e6 // 1 hour
 #define PMS_TIMER_DURATION_USECS 1800 * 1e6      // 30 minutes
 
@@ -26,8 +26,9 @@ PMS::DATA pms_data;
 esp_timer_handle_t pms_timer;
 bool pms_timer_tick = false;
 
+xTimerHandle grace_period_timer;
 esp_timer_handle_t basement_timer;
-bool basement_timer_tick = false;
+bool basement_timer_tick = false, basement_in_grace_period = false;
 
 GCM<AES256> cipher;
 SX1276 radio = new Module(18, 26, 14, 35);
@@ -62,25 +63,29 @@ ICACHE_RAM_ATTR void basement_timer_callback(void *arg)
   basement_timer_tick = true;
 }
 
+ICACHE_RAM_ATTR void grace_period_timer_callback(void *arg)
+{
+  basement_in_grace_period = false;
+}
+
 void setup()
 {
   pinMode(LED_BUILTIN, OUTPUT);    // Initialize the built-in LED
   digitalWrite(LED_BUILTIN, HIGH); // Turn the LED on
   pinMode(BUZZER, OUTPUT);
-  digitalWrite(BUZZER, HIGH); // Turn the BUZZER off
+  digitalWrite(BUZZER, LOW); // Turn the BUZZER off
   pinMode(BLUE_BTN, INPUT_PULLDOWN);
   attachInterrupt(BLUE_BTN, blue_btn_callback, FALLING);
 
   Serial.begin(9600); // Initialize serial communications via USB
 
-  ESP_ERROR_CHECK(display.begin(SSD1306_SWITCHCAPVCC, 0x3C));
+  ESP_ERROR_CHECK(display.begin(SSD1306_SWITCHCAPVCC, 0x3C) != true);
   display.dim(false);
   display.println("Air Quality Heltec");
 
-  ESP_ERROR_CHECK(esp_bt_controller_deinit());       // Deinitialize the Bluetooth controller
-  WiFi.mode(WIFI_STA);                               // Set the WiFi module to station mode
-  ESP_ERROR_CHECK(WiFi.begin("NET", WIFI_PASSWORD)); // Connect to the WiFi network
-  while (WiFi.status() != WL_CONNECTED)              // Wait for the Wi-Fi to connect
+  WiFi.mode(WIFI_STA);                  // Set the WiFi module to station mode
+  WiFi.begin("NET", WIFI_PASSWORD);     // Connect to the WiFi network
+  while (WiFi.status() != WL_CONNECTED) // Wait for the Wi-Fi to connect
   {
     delay(500);
     Serial.print(".");
@@ -91,27 +96,36 @@ void setup()
   pms.sleep(); // make sure the PMS sensor is in sleep mode
 
   cipher.clear();
-  ESP_ERROR_CHECK(cipher.setKey(AES_KEY, 32));
+  ESP_ERROR_CHECK(cipher.setKey(AES_KEY, 32) != true);
 
   ESP_ERROR_CHECK(radio.begin(868.0, 125, 12, 5, 18U, 17, 8U, 0) != 0);
   radio.setDio0Action(lora_recv_callback);
   radio.startReceive();
 
-  ESP_ERROR_CHECK(esp_timer_create(&(esp_timer_create_args_t){
-                                       .callback = pms_timer_callback,
-                                       .arg = NULL,
-                                       .dispatch_method = ESP_TIMER_TASK,
-                                       .name = "pms_timer"},
-                                   &pms_timer) != ESP_OK);
+  esp_timer_create_args_t pms_timer_args = {
+      .callback = pms_timer_callback,
+      .arg = NULL,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "pms_timer"};
+  ESP_ERROR_CHECK(esp_timer_create(&pms_timer_args,
+                                   &pms_timer));
   ESP_ERROR_CHECK(esp_timer_start_periodic(pms_timer, PMS_TIMER_DURATION_USECS));
 
-  ESP_ERROR_CHECK(esp_timer_create(&(esp_timer_create_args_t){
-                                       .callback = basement_timer_callback,
-                                       .arg = NULL,
-                                       .dispatch_method = ESP_TIMER_TASK,
-                                       .name = "basement_timer"},
+  esp_timer_create_args_t basement_timer_args = {
+      .callback = basement_timer_callback,
+      .arg = NULL,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "basement_timer"};
+  ESP_ERROR_CHECK(esp_timer_create(&basement_timer_args,
                                    &basement_timer));
   ESP_ERROR_CHECK(esp_timer_start_periodic(basement_timer, BASEMENT_TIMER_DURATION_USECS));
+
+  // trying a FreeRTOS software timer for the sake of it
+  grace_period_timer = xTimerCreate("grace_period_timer",
+                                    portTICK_PERIOD_MS * 1000 * 60 * 20, // 20 minutes
+                                    pdFALSE,
+                                    NULL,
+                                    grace_period_timer_callback);
 
   display.clearDisplay();
   digitalWrite(LED_BUILTIN, LOW); // Turn the LED off
@@ -119,6 +133,7 @@ void setup()
 
 void loopProd()
 {
+  // air quality measurement
   if (pms_timer_tick)
   {
     pms_timer_tick = false;
@@ -134,7 +149,14 @@ void loopProd()
     {
       got_an_alarm = false;
     }
+    else
+    {
+      basement_in_grace_period = true;
+      ESP_ERROR_CHECK(xTimerReset(grace_period_timer, portTICK_PERIOD_MS * 10)); // wait 10 milliseconds to ensure the timer has started
+      digitalWrite(BUZZER, HIGH);
+    }
     delay(1000);
+    digitalWrite(BUZZER, LOW);
   }
 
   if (lora_recv_packet)
@@ -175,7 +197,10 @@ void loopProd()
       Serial.println("Basement battery level: " + String(proto.battery_level));
       Serial.println("Basement temperature: " + String(proto.temperature));
       Serial.println("Basement pressure: " + String(proto.pressure));
-      got_an_alarm = proto.sensor_interrupt;
+      if (!basement_in_grace_period)
+      {
+        got_an_alarm = proto.sensor_interrupt;
+      }
     }
     else if (state == RADIOLIB_ERR_CRC_MISMATCH)
     {
@@ -204,11 +229,13 @@ void loopProd()
   if (got_an_alarm)
   {
     digitalWrite(LED_BUILTIN, HIGH); // Turn the LED on
+    digitalWrite(BUZZER, HIGH);
     // TODO: handle alarm
     Serial.println("ALARM!");
     delay(500);
     digitalWrite(LED_BUILTIN, LOW); // Turn the LED off
-    delay(500);
+    digitalWrite(BUZZER, LOW);
+    delay(200);
   }
 }
 

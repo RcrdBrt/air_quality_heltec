@@ -46,12 +46,11 @@ ICACHE_RAM_ATTR void pms_timer_callback(TimerHandle_t xTimer)
 
 ICACHE_RAM_ATTR void blue_btn_callback()
 {
-  if (millis() - last_blue_btn_irq_time < 500)
+  if (millis() - last_blue_btn_irq_time < 50)
   {
     blue_btn_pressed = true;
+    last_blue_btn_irq_time = millis();
   }
-
-  last_blue_btn_irq_time = millis();
 }
 
 ICACHE_RAM_ATTR void lora_recv_callback()

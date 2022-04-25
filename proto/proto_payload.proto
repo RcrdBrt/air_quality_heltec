@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+message ProtoPayload {
+    float temperature = 1;
+    int32 pressure = 2;
+    bool sensor_interrupt = 3;
+    int32 battery_level = 4;
+    int32 battery_voltage = 5;
+}

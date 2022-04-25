@@ -145,7 +145,8 @@ void loopProd()
     else
     {
       basement_in_grace_period = true;
-      ESP_ERROR_CHECK(xTimerReset(grace_period_timer, portTICK_PERIOD_MS * 10) != pdPASS); // wait 10 milliseconds to ensure the timer has started
+      ESP_ERROR_CHECK(xTimerReset(basement_timer, pdMS_TO_TICKS(10)) != pdPASS);
+      ESP_ERROR_CHECK(xTimerReset(grace_period_timer, pdMS_TO_TICKS(10)) != pdPASS); // wait 10 milliseconds to ensure the timer has started
       digitalWrite(BUZZER, HIGH);
     }
     delay(1000);

@@ -122,9 +122,9 @@ void setup()
   cipher.clear();
   ESP_ERROR_CHECK(cipher.setKey(AES_KEY, 32) != true);
 
-  ESP_ERROR_CHECK(radio.begin(868.0, 125, 12, 5, 18U, 17, 8U, 0) != 0);
+  ESP_ERROR_CHECK(radio.begin(868.0, 125, 12, 5U, 18U, 17, 8U, 0) != 0);
   radio.setDio0Action(lora_recv_callback);
-  radio.startReceive();
+  ESP_ERROR_CHECK(radio.startReceive() != 0);
 
   basement_timer = xTimerCreate("basement_timer",
                                 pdMS_TO_TICKS(BASEMENT_TIMER_DURATION_MS),
@@ -223,9 +223,15 @@ void loopProd()
       Serial.println("Basement battery level: " + String(proto.battery_level));
       Serial.println("Basement temperature: " + String(proto.temperature));
       Serial.println("Basement pressure: " + String(proto.pressure));
+      Serial.println("Basement sensor interrupt: " + String(proto.sensor_interrupt));
       if (!basement_in_grace_period)
       {
         got_an_alarm = proto.sensor_interrupt;
+        Serial.println("Not in grace period, alarm state is: " + String(got_an_alarm));
+      }
+      else
+      {
+        Serial.println("In grace period, ignoring the alarm (was " + String(proto.sensor_interrupt) + ")");
       }
     }
     else if (state == RADIOLIB_ERR_CRC_MISMATCH)
